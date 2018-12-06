@@ -1,0 +1,21 @@
+子节点并不会继承父节点的访问权限，访问权限的检查也是基于每一个znode节点的，如果一个客户端可以访问一个znode节点，即使这个
+客户端无权访问该节点的父节点，仍然可以访问这个znode节点。
+
+给一个zookeeper增加鉴权信息，需要调用addAuthInfo方法：
+void addAuthInfo(String scheme, byte auth[])
+scheme：表示所采用的鉴权模式
+auth：表示发送给服务器的鉴权信息，该参数的类型为byte[]类型，不过大部分的鉴权模式需要一个String类型的信息，所以你可以通
+过String.getBytes()来将String转换为byte[]。
+
+内置的鉴权模式：
+1、digest：该模式的auth-info格式为userid:passwd_digest
+格式如digest:lily:XXXX, READ|WRITE|CREATE|DELETE|ADMIN
+2、ip：格式ip:127.0.0.145/24(网络地址/掩码), READ
+
+顺序性保障：
+连接丢失时的顺序性：在应用程序的连接丢失后，客户端库不会再次重新提交请求，因此就需要应用程序对已经取消的请求进行重新提交的
+操作。所以，在连接丢失的情况下，应用程序可以依赖客户端库来解决所有后续操作，而不能依赖zookeeper来承担这些操作。
+
+数据字段和子节点限制：
+zookeeper默认情况下对数据字段的传输限制为1MB，该限制为任何节点数据字段的最大可存储字节数，同时也限制了任何父节点可以拥有
+的子节点数。

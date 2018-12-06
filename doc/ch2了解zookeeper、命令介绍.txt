@@ -1,0 +1,169 @@
+/workers节点作为父节点，其下每个znode子节点保存了系统中一个可用从节点信息
+/tasks节点作为父节点，其下每个znode子节点保存了所有已经创建并等待从节点执行的任务的信息，主从模式的应用的客户端在/tasks下添加
+一个znode子节点，用来表示一个新任务，并等待任务状态的znode节点
+/assign节点作为父节点，其下每个znode子节点保存了分配到某个从节点的一个任务信息，当主节点为某个从节点分配了一个任务，就会在/assign
+下增加一个子节点
+
+zookeeper并不允许局部写入或读取znode节点的数据，当设置一个znode节点的数据或读取时，znode节点的内容会被整个替换或全部读取出来
+
+znode节点可以是持久节点，还可以是临时节点，持久的znode，如/path，只能通过调用delete来进行删除，临时的znode当创建该节点的客户端崩溃
+或关闭了与zookeeper的连接时，这个节点就会被删除
+持久znode是一种非常有用的znode，可以通过持久类型的znode为应用保存一些数据，即使znode的创建者不再属于应用系统时，数据也不会丢失。
+例如，在主从模式下，需要保存从节点的任务分配情况，即使分配任务的主节点已经崩溃。
+临时znode传达了应用某些方面的信息，仅当创建者的会话有效时这些信息必须有效保留，例如：在主从模式下，当主节点创建的znode为临时节点时，
+该节点的存在意味着现在有一个主节点，且主节点状态处于正常运行中。如果主znode消失后，该znode节点任然存在，那么系统将无法检测到主节点
+崩溃，这样就可以阻止系统继续进行，因此这个znode需要和主节点一起消失。我们也在从节点中使用临时的znode，如果一个从节点失效，那么会话
+将会过期，之后znode/workers也将自动消失。
+一个临时节点在以下情况下会被删除
+1、当创建该znode的客户端的会话因超时或主动关闭而终止时
+2、当某个客户端（不一定是创建者）主动删除该节点时
+
+znode有4种类型：1、持久的、2、临时的、3、持久有序的、4、临时有序的
+
+版本：每个znode都有一个版本号，它随着每次数据变化而自增，两个api操作可以有条件的执行：setData和delete。这两个调用以版本号作为转入参数，
+只有当转入参数的版本号与服务器上的版本号一致时调用才会成功。
+
+会话：在对zookeeper集合执行任何请求前，一个客户端必须先与服务建立会话。会话的概念非常重要，对zookeeper的运行也非常关键。客户端提交
+给zookeeper的所有操作均关联在一个会话上。当一个会话因某种原因而中止时，在这个会话期间创建的临时节点将会消失。
+
+单机方式启动：
+第一个zookeeper会话的创建：
+#bin/zkServer.sh start
+如果想在前台看到服务器输出，则
+#bin/zkServer.sh start-foreground
+客户端zkCli.sh
+命令：
+ls /
+创建一个名为/workers的znode：
+create /workers "" 这里存""，说明我们不想在这个znode中保存数据，然而，该接口中的这个参数可以使我们保存任何字符串到zookeeper的节点中，
+比如可以替换""为"workers"
+删除znode：
+delete /workers
+创建会话时，你需要设置会话超时这个重要参数，如果经过时间t后服务接收不到这个会话的任何消息，服务就会声明会话过期，而在客户端侧，如果经过
+t/3的时间未收到任何消息，客户端将向服务器发送心跳消息。在经过2t/3的时间后，zookeeper客户端开始寻找其他的服务器，而此时他还有t/3的时间
+去寻找
+
+集群方式启动：
+	ZooKeeper集群中具有两个关键的角色：Leader和Follower。集群中所有的结点作为一个整体对分布式应用提供服务，集群中每个结点之间都互相连接，
+	所以，在配置的ZooKeeper集群的时候，每一个结点的host到IP地址的映射都要配置上集群中其它结点的映射信息。
+	例如，我的ZooKeeper集群中每个结点的配置，以icity0为例，/etc/hosts内容如下所示：
+	127.0.0.10 icity1
+	127.0.0.11 icity2
+	127.0.0.12 icity3
+	另外icity1、icity2依此配置即可。
+	ZooKeeper采用一种称为Leaderelection的选举算法。在整个集群运行过程中，只有一个Leader，其他的都是Follower，
+	如果ZooKeeper集群在运行过程中Leader出了问题，系统会采用该算法重新选出一个Leader。因此，各个结点之间要能够保证互相连接，必须配置上述映射。
+	ZooKeeper集群启动的时候，会首先选出一个Leader，在Leaderelection过程中，某一个满足选举算的结点就能成为Leader。
+
+cfg文件配置：
+	dataDir=/web/zookeeper/data/z1
+	clientPort=2181
+	#2222：作为F时，用于F和L之间的数据同步和其它通信
+	#2223：用于Leader选举过程中投票通信。
+	server.1=127.0.0.1:2222:2223
+	server.2=127.0.0.1:3333:3334
+	server.3=127.0.0.1:4444:4445
+	zookeeper启动时读取myid文件以确定身份，再读取cfg文件，以便决定自己使用哪些端口和其它的zk服务器端口。客户端连接时，需要使用地址组合。
+	tickTime：CS通信心跳数，服务器之间或客户端与服务器之间维持心跳的时间间隔，也就是每个 tickTime 时间就会发送一个心跳。以毫秒为单位。
+	initLimit：Follower在启动过程中，会从Leader同步所有最新数据，然后确定自己能够对外服务的起始状态。Leader允许F在initLimit时间内完成这个工作。
+	通常情况下，我们不用太在意这个参数的设置。如果ZK集群的数据量确实很大了，F在启动的时候，从Leader上同步数据的时间也会相应变长，因此在这种情况下，有必要适当调大这个参数了（tickTime的数量）。
+	syncLimit：在运行过程中，Leader负责与ZK集群中所有机器进行通信，例如通过一些心跳检测机制，来检测机器的存活状态。如果L发出心跳包在syncLimit之后，还没有从F那里收到响应，那么就认为这个F已经不在线了。
+	注意：不要把这个参数设置得过大，否则可能会掩盖一些问题（tickTime的数量）。
+	cnxTimeout：Leader选举过程中，打开一次连接的超时时间，默认是5s。
+	leaderServes：默认情况下，Leader是会接受客户端连接，并提供正常的读写服务。但是，如果你想让Leader专注于集群中机器的协调，那么可以将这个参数设置为no，这样一来，会大大提高写操作的性能。
+
+创建data目录并设置myid：
+	在我们配置的dataDir指定的目录下面，创建一个myid文件，里面内容为一个数字，用来标识当前主机，conf/zoo.cfg文件中配置的server.X中X为什么数字，则myid文件中就输入这个数字。
+	例如icity0服务器上的配置：
+	cd zk
+	mkdir data
+	cd data
+	vi myid 1
+	icity1、icity2依此配置即可。
+启动icity1：
+	./bin/zkServer.sh start-foreground ./conf/z1.cfg &
+	nohup bin/zkServer.sh start ./conf/zoo.cfg &
+
+注意：机器之间需要设置免密登录，关闭防火墙
+
+此时连不上其它服务：
+	Cannot open channel to 2 at election address /127.0.0.1:3334
+	java.net.ConnectException: Connection refused
+启动icity2：
+	./bin/zkServer.sh start-foreground ./conf/z2.cfg &
+	LEADING
+	LEADING - LEADER ELECTION TOOK - 349 icity2被选举为leading，此时icity1的日志显示：
+	FOLLOWING - LEADER ELECTION TOOK - 76682
+	此时符合法定仲裁（三分之二）的可用服务，此时服务开始可用
+客户端连接：
+	 ./bin/zkCli.sh -server ip104:2181,ip105:2181,ip106:2181，需要把所有的集群机器都写上
+	 ./zkServer.sh status ../conf/z2.cfg查看集群状态，要带上cfg文件。
+
+一个主从模式的例子的实现：
+	help：查看帮助。
+	help get：查看特定命令帮助。
+	主节点角色：
+	1、create -e /master "master1.example.com:2223"
+	只有一个进程会成为主节点，所以一个进程成为zookeeper的主节点后必须锁定管理权，所以进程需要创建一个临时znode，名为/master
+	使用-e标识来表示创建的znode为临时性的
+	2、再起一个进程，使用create -e /master "master1.example.com:2223"，会提示：
+	Node already exists: /master
+	3、这样，第二个进程就知道存在了一个主节点，然后一个活动节点可能崩溃，备份主节点需要接替活动主节点的角色，为了检测到这些，需要在/master节点上设置一个监视点，
+	stat /master true
+	stat可以得到一个znode节点的属性，并允许我们在已经存在的znode节点上设置监视点，通过在路径后面设置参数true来添加监视点
+	4、当主节点崩溃，会观察到以下输出：
+	WATCHER::
+	WatchedEvent state:SyncConnected type:NodeDeleted path:/master
+	5、此时主节点不存在了，备份主节点可以再次创建/master节点来成为活动主节点：
+	create -e /master "master1.example.com:2223"
+
+	从节点、任务和分配
+	在真实应用中，这些znode可能由主进程在分配任务前创建，也可能由一个引导程序创建，不管这些节点是如何创建的，一旦这些节点存在了，
+	主节点就需要监视/workers和/tasks的子节点的变化情况
+	从节点执行create /workers ""
+	create /tasks ""
+	create /assign ""
+	主节点执行ls /workers true
+	ls /tasks true
+	通过true这个参数，可以设置对应znode的子节点变化的监视点
+	get /tasks 1
+	get后面加1也可以设置对应znode的子节点变化的监视点
+
+	从节点角色
+	1、从节点首先要通知主节点，告知从节点可以执行任务。从节点通过在/workers子节点下创建临时性的znode来进行通知，并在主节点中使用主机名来标识自己：
+	create -e /workers/worker1.example.com "worker1.example.com:2224"
+	主节点就会发现：
+	WATCHER::
+	WatchedEvent state:SyncConnected type:NodeChildrenChanged path:/workers
+	2、从节点需要创建一个父znode/assign/worker1.example.com来接收任务分配，并通过第二个参数为true的ls命令来监视这个节点的变化
+	create /assign/worker1.example.com ""
+	ls /assign/worker1.example.com true
+
+	客户端角色
+	1、客户端向系统中添加任务：
+	create -s /tasks/task- "cmd"
+	一旦创建任务的znode，主节点会观察到以下事件：
+	WATCHER::
+	WatchedEvent state:SyncConnected type:NodeChildrenChanged path:/tasks
+	2、客户端必须等待任务执行完毕。执行任务的从节点将任务执行完毕后，会创建一个znode来表示任务状态。客户端通过查看任务状态的znode
+	是否创建来确定任务是否执行完毕，因此客户端需要监视状态znode的创建事件：
+	ls /tasks/task-0000000000 true
+	3、主节点检查这个新任务，获取可用的从节点列表，之后分配这个任务给worker1.example.com：
+	ls /tasks
+	ls /workers
+	create /assign/worker1.example.com/task-0000000000 ""
+	4、从节点接收到新任务分配的通知
+	WATCHER::
+	WatchedEvent state:SyncConnected type:NodeChildrenChanged path:/assign/worker1.example.com
+	从节点便开始检查新任务，并确认该任务是分配给自己的：
+	ls /assign/worker1.example.com
+	5、一旦从节点执行完任务，它就会在/tasks中添加一个状态znode：
+	create /tasks/task-0000000000/status "done"
+	之后客户端就会收到通知：
+	WATCHER::
+	WatchedEvent state:SyncConnected type:NodeChildrenChanged path:/tasks/task-0000000000
+	并查看执行结果：
+	get /tasks/task-0000000000
+	get /tasks/task-0000000000/status
+
+	删除节点，包括子节点：rmr /root

@@ -1,0 +1,57 @@
+从概念上来看，ZooKeeper其实是很简单的。他所做的一切就是保证每一次对znode树的修改，都能够复制到ensemble的大多数服务器上。
+如果非主服务器脱离集群，那么至少有一台服务器上的副本保存了最新状态。剩下的其他的服务器上的副本，会很快更新这个最新的状态。
+为了实现这个简单而不平凡的设计思路，ZooKeeper使用了一个叫做Zab的协议。这个协议分为两阶段，并且不断的运行在ZooKeeper上：
+阶段 1：领导选举（Leader election）Ensemble中的成员通过一个程序来选举出一个首领成员，我们叫做leader。
+其他的成员就叫做follower。在大多数（quorum）follower完成与leader状态同步时，这个阶段才结束。
+阶段 2： 原子广播（Atomic broadcast）所有的写入请求都会发送给leader，leader在广播给follower。
+当大多数的follower已经完成了数据改变，leader才会将更新提交，客户端就会随之得到leader更新成功的消息。
+协议中的设计也是具有原子性的，所以写入操作只有成功和失败两个结果。
+如果leader脱离了集群，剩下的节点将选举一个新的leader。如果之前的leader回到了集群中，那么将被视作一个follower。
+leader的选举很快，大概200ms就能够产生结果，所以不会影响执行效率。
+Ensemble中的所有节点都会在更新内存中的znode树的副本之前，先将更新数据写入到硬盘上。
+读操作可以请求任何一台ZooKeeper服务器，而且读取速度很快，因为读取是内存中的数据副本。
+
+ZooKeeper在数据一致性上实现了如下几个方面：
+1、顺序一致性从客户端提交的更新操作是按照先后循序排序的。例如，如果一个客户端将一个znode z赋值为a，然后又将z的值改变成b，
+那么在这个过程中不会有客户端在z的值变为b后，取到的值是a。
+2、原子性更新操作的结果不是失败就是成功。即，如果更新操作失败，其他的客户端是不会知道的。
+3、系统视图唯一性无论客户端连接到哪个服务器，都将看见唯一的系统视图。如果客户端在同一个会话中去连接一个新的服务器，
+那么他所看见的视图的状态不会比之前服务器上看见的更旧。当ensemble中的一个服务器宕机，客户端去尝试连接另外一台服务器时，
+如果这台服务器的状态旧于之前宕机的服务器，那么服务器将不会接受客户端的连接请求，直到服务器的状态赶上之前宕机的服务器为止。
+4、持久性一旦更新操作成功，数据将被持久化到服务器上，并且不能撤销。所以服务器宕机重启，也不会影响数据。
+5、时效性系统视图的状态更新的延迟时间是有一个上限的，最多不过几十秒。如果服务器的状态落后于其他服务器太多，
+ZooKeeper会宁可关闭这个服务器上的服务，强制客户端去连接一个状态更新的服务器。
+从执行效率上考虑，读操作的目标是内存中的缓存数据，并且读操作不会参与到写操作的全局排序中。
+这就会引起客户端在读取ZooKeeper的状态时产生不一致。例如，A客户端将znode z的值由a改变成a′，然后通知客户端B去读取z的值，
+但是B读取到的值是a，而不是修改后的a′。为了阻止这种情况出现，B在读取z的值之前，需要调用sync方法。
+sync方法会强制B连接的服务器状态与leader的状态同步，这样B在读取z的值就是A重新更改过的值了。
+sync操作只在异步调用时才可用，原因是你不需要等待操作结束再去执行其他的操作。因此，ZooKeeper保证所有的子操作都会在sync
+结束后再执行，甚至在sync操作之前发出的操作请求也不例外。
+
+ZooKeeper实例会与服务连接断开或者重新连接，状态会在CONNECTING和CONNECTED之间转换。如果连接断开，
+watcher会收到一个断开连接事件。请注意，这两个状态都是ZooKeeper实例自己初始化的，并且在断开连接后会自动进行重连接。
+如果调用了close()或者session过期，ZooKeeper实例会转换为第三个状态CLOSED，此时在接受事件的KeeperState属性值为
+Expired。一旦ZooKeeper的状态变为CLOSED，说明实例已经不可用（可以通过isAlive()来判断），并且不能再被使用。
+如果要重新建立连接，就需要重新构建一个ZooKeeper实例。
+
+KeeperException包含了3大类异常。
+1、状态异常 State Exception
+当无法操作znode树造成操作失败时，会产生状态异常。通常引起状态异常的原因是有另外的程序在同时改变znode。例如，一个
+setData()操作时，会抛出KeeperException.BadVersionException。因为另外的一个程序已经在setData()操作之前修
+改了znode，造成setData()操作时版本号不匹配了。程序员必须了解，这种情况是很有可能发生的，我们必须靠编写处理这种
+异常的代码来解决他。
+有的一些异常是编写代码时的疏忽造成的，例如KeeperException.NoChildrenForEphemeralsException。这个异常是当
+我们给一个enphemeral类型的znode添加子节点时抛出的。
+2、重新获取异常 Recoverable Exception
+重新获取异常来至于那些能够获得同一个ZooKeeper session的应用。伴随的表现是抛出KeeperException.ConnectionLossException，
+表示与ZooKeeper的连接丢失。ZooKeeper将会尝试重新连接，大多数情况下重新连接都会成功并且能够保证session的完整性。
+然而，ZooKeeper无法通知客户端操作由于KeeperException.ConnectionLossException而失败。这就是一个部分失败的例
+子。只能依靠程序员编写代码来处理这个不确定性。
+在这点上，幂等操作和非幂等操作的差别就会变得非常有用了。一个幂等操作是指无论运行一次还是多次结果都是一样的，例如一个
+读请求，或者一个不设置任何值得setData操作。这些操作可以不断的重试。
+一个非幂等操作不能被不分青红皂白的不停尝试执行，就像一些操作执行一次的效率和执行多次的效率是不同。我们将在之后会讨论
+如何利用非幂等操作来处理Recovreable Exception。
+3、不能重新获取异常 Unrecoverable exceptions
+在一些情况下，ZooKeeper的session可能会变成不可用的——比如session过期，或者因为某些原因session被close掉（都会抛
+出KeeperException.SessionExpiredException），或者鉴权失败（KeeperException.AuthFailedException）。无论
+何种情况，ephemeral类型的znode上关联的session都会丢失，所以应用在重新连接到ZooKeeper之前都需要重新构建他的状态。

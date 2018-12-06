@@ -1,0 +1,62 @@
+一个协作任务是指一个包含多个进程的任务，这个任务可以是为了协作或者是为了管理竞争，协作意味着多个进程需要一同处理某些事情，
+一些进程采取某些行动使得其他进程可以继续工作。比如，在典型的主从工作模式中：
+从节点处于空闲状态时，通知主节点可以接受工作，主节点就会分配任务给从节点。
+还有在主从模式下，我们希望只有一个主节点，但是很多从节点都想成为主节点，因此我们需要实现互斥排它锁。
+
+zookeeper的客户端api很强大：
+保障强一致性，有序性，持久性
+实现通用的同步原语的能力
+在实际分布式系统中，并发往往导致不正确的行为，zookeeper提供了一种简单的并发处理机制
+
+zookeeper不适合海量数据存储。
+
+对分布式系统的定义：是同时跨越多个物理主机，独立运行的多个软件组件所组成的系统。
+
+任务总结：
+主节点选举：这是关键的一步，使得主节点可以给从节点分配任务
+崩溃检测：主节点必须具有检测从节点崩溃或失去连接的能力
+组成员关系管理：主节点必须具有知道哪一个从节点可以执行任务的能力
+元数据管理：主节点和从节点必须具有通过某种可靠的方式来保存分配状态和执行状态的能力
+
+术语：
+	1、client：是一个节点，从服务器返回信息，对于特定的时间间隔内，向server发送信息，表明自己还活着。server向客户端回应确认信息，
+	如果没有，client自动重定向消息到另一台server。
+	2、server：zookeeper集群中的一个节点，为client提供所有服务，给client的确认信息表明该server是活的。
+	3、ensemble：一组zookeeper服务器，最小的节点数从3开始。
+	4、leader：server节点，连接的任何节点故障，server leader负责自动恢复，leader在服务启动时完成推选。
+	5、follower：server节点，听从于leader的指令。
+
+名字空间等级：
+	类似于linux文件系统的树行结构，首先有一个跟节点，root下有config节点和workers节点。
+	/config集中式配置管理，每个znode可以存放最多1M数据。
+	/workers命名服务
+
+	每个znode都有stat结构：version+acl+ts+data length
+		version：节点关联的数据变化次数。
+		acl：access control list 访问控制列表，权限认证。
+		ts：timestramp时间戳，znode创建或修改时逝去的时间，单位毫秒数，znode通过zxid识别变化。
+		data length：data的长度，上限1M
+znode类型：
+	1、persistence持久型：默认节点类型，客户端断开，一直有效。
+	2、ephemeral临时型：会话关闭自动删除，不允许有children，在leader时使用。
+	3、sequential顺序型：可以是永久的，也可以是临时的，创建该节点时，zk附件10个数字的序列号在末段。顺序节点在加锁和同步的时候使用。
+
+sessions
+	服务端和客户端的连接，连接建立的时候会指定一个sessionid给client，请求的执行顺序是FIFO，client在特定的时间间隔内发送心跳信息给
+	服务器来保持session有效，如果zookeeper集群没有收到client的心跳信息，则认为client挂了。session超时通常用毫秒，session结束
+	后，临时节点也删除了。
+
+watch：
+	client从zk集群获得变化通知的机制，在读取znode时可以设置watch，znode发生变化时可以发送通知给注册的客户端。znode的变化是指znode
+	数据的变化或children发生变化。watch只触发一次，如果要多次触发就需要多次注册。当一个连接session过期，watch也会被删除。
+
+zk的工作流程：
+	1、读：client发送读请求到一台server，该server直接返回数据，所以读请求是快速的。
+	2、写：client发送数据和请求到一台server，该server会把请求发给leader，leader会把写请求补发给所有的followers，假如大部分
+	followers成功返回了响应，写请求就会成功并且返回给client，否则写请求失败，这大多数nodes叫做Quorum。
+	名称解释：
+	1、replicated database：用于存储zookeeper数据，每一个zookeeper节点都有自己的数据库，存储着同样的数据。
+	2、leader：leader负责处理写请求。
+	3、follower：负责从客户端接收写请求，转发给leader。
+	4、request processor：只在leader节点上有，用于管理follower的写请求。
+	5、atomic broadcasts：负责广播leader节点的变化到follower节点。

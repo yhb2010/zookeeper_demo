@@ -1,0 +1,82 @@
+http://curator.apache.org
+
+Curator主要从以下几个方面降低了zk使用的复杂性:
+重试机制:提供可插拔的重试机制, 它将给捕获所有可恢复的异常配置一个重试策略, 并且内部也提供了几种标准的重试策略(比如指数补偿).
+连接状态监控: Curator初始化之后会一直的对zk连接进行监听, 一旦发现连接状态发生变化, 将作出相应的处理.
+zk客户端实例管理:Curator对zk客户端到server集群连接进行管理. 并在需要的情况, 重建zk实例, 保证与zk集群的可靠连接
+各种使用场景支持:Curator实现zk支持的大部分使用场景支持(甚至包括zk自身不支持的场景), 这些实现都遵循了zk的最佳实践, 并考虑了各种极端情况.
+
+Curator通过以上的处理, 让用户专注于自身的业务本身, 而无需花费更多的精力在zk本身.
+
+重试策略
+RetryPolicy接口只有一个方法(以前版本有两个方法):
+public boolean allowRetry(int retryCount, long elapsedTimeMs);
+在开始重试之前, allowRetry方法被调用, 其参数将指定当前重试次数, 和操作已消耗时间. 如果允许, 将继续重试, 否则抛出异常.
+Curator内部实现的几种重试策略:
+ExponentialBackoffRetry:重试指定的次数, 且每一次重试之间停顿的时间逐渐增加.
+RetryNTimes:指定最大重试次数的重试策略
+RetryOneTime:仅重试一次
+RetryUntilElapsed:一直重试直到达到规定的时间
+
+CuratorFrameworkFactory类提供了两个方法, 一个工厂方法newClient, 一个构建方法build. 使用工厂方法newClient可以
+创建一个默认的实例, 而build构建方法可以对实例进行定制. 当CuratorFramework实例构建完成, 紧接着调用start()方法,
+在应用结束的时候, 需要调用close()方法.  CuratorFramework是线程安全的. 在一个应用中可以共享同一个zk集群的
+CuratorFramework.
+
+CuratorFramework API采用了连贯风格的接口(Fluent Interface). 所有的操作一律返回构建器, 当所有元素加在一起之后,
+整个方法看起来就像一个完整的句子. 比如下面的操作:
+client.create().forPath("/head", new byte[0]);
+client.delete().inBackground().forPath("/head");
+client.create().withMode(CreateMode.EPHEMERAL_SEQUENTIAL).forPath("/head/child", new byte[0]);
+client.getData().watched().inBackground().forPath("/test");
+方法说明:
+watched()、usingWatcher()方法接收一个普通的zookeeper的Watcher对象
+create(): 发起一个create操作. 可以组合其他方法 (比如mode 或background) 最后以forPath()方法结尾
+delete(): 发起一个删除操作. 可以组合其他方法(version 或background) 最后以forPath()方法结尾
+checkExists(): 发起一个检查znode 是否存在的操作. 可以组合其他方法(watch 或background) 最后以forPath()方法结尾
+getData(): 发起一个获取znode数据的操作. 可以组合其他方法(watch, background 或get stat) 最后以forPath()方法结尾
+setData(): 发起一个设置znode数据的操作. 可以组合其他方法(version 或background) 最后以forPath()方法结尾
+getChildren(): 发起一个获取znode子节点的操作. 可以组合其他方法(watch, background 或get stat) 最后以forPath()方法结尾
+inTransaction(): 发起一个ZooKeeper事务. 可以组合create, setData, check, 和/或delete 为一个操作, 然后commit() 提交
+
+通知(Notification)
+Curator的相关代码已经更新了, 里面的接口改成CuratorListener了, 而且接口中去掉了clientCloseDueToError方法. 只有一个方法:
+eventReceived()，当一个后台操作完成或者指定的watch被触发时该方法被调用。
+UnhandledErrorListener接口用来对异常进行处理.
+CuratorEvent(在以前版本为ClientEvent)是对各种操作触发相关事件对象(POJO)的一个完整封装, 而事件对象的内容跟事件类型相关,
+下面是对应关系:
+CREATE	getResultCode() and getPath()
+DELETE	getResultCode() and getPath()
+EXISTS	getResultCode(), getPath() and getStat()
+GET_DATA	getResultCode(), getPath(), getStat() and getData()
+SET_DATA	getResultCode(), getPath() and getStat()
+CHILDREN	getResultCode(), getPath(), getStat(), getChildren()
+WATCHED	getWatchedEvent()
+
+名称空间(Namespace)
+因为一个zk集群会被多个应用共享, 为了避免各个应用的zk patch冲突, Curator Framework内部会给每一个Curator Framework实例分配一个namespace(可选). 这样你在create ZNode的时候都会自动加上这个namespace作为这个node path的root. 使用代码如下:
+CuratorFramework    client = CuratorFrameworkFactory.builder().namespace("MyApp") ... build();
+client.create().forPath("/test", data);
+// node was actually written to: "/MyApp/test"
+
+Notification事件处理
+Curator对ZooKeeper的事件Watcher进行了封装处理, 然后实现了一套监听机制. 提供了几个监听接口用来处理ZooKeeper连接状态的变化
+当连接出现异常, 将通过ConnectionStateListener接口进行监听, 并进行相应的处理, 这些状态变化包括:
+暂停(SUSPENDED): 当连接丢失, 将暂停所有操作, 直到连接重新建立, 如果在规定时间内无法建立连接, 将触发LOST通知
+重连(RECONNECTED): 连接丢失, 执行重连时, 将触发该通知
+丢失(LOST): 连接超时时, 将触发该通知
+
+有两种错误场景得到了很好的处理：
+1、创建有序节点的过程中发生错误
+如果客户端所连接的服务器崩溃了，但还没来得及返回客户端所创建的有序节点的节点名称(即节点序列号)，或者客户端只是连接丢失，
+客户端没接收到所请求操作的响应信息，结果，客户端并不知道所创建的znode节点路径名称。为了解决这个问题，CreateBuilder提
+供了一个withProtection方法来通知Curator客户端，在创建的有序节点前添加一个唯一标识符，如果create失败了，客户端就会
+开始重试操作，而重试操作的一个步骤是验证是否存在一个节点包含这个唯一标识符。
+2、删除一个节点时的错误处理
+在进行delete操作时，如果客户端与服务器的连接丢失，客户端并不知道delete操作是否成功执行，如果一个znode节点删除与否表示
+某些特殊情况，例如，表示一个资源处于锁定状态，因此确保该节点删除才能确保资源的锁定被释放，以便可以再次使用。Curator客户
+端中提供了一个方法，对应用程的delete操作的执行提供了保障，Curator客户端会重新执行操作，直到成功为止，或Curator客户端
+实例不可用时。使用该功能，我们只需要使用deleteBuilder接口中定义的guaranteed方法。
+
+对于主节点，如果想要释放管理权只能退出takeLeadership方法，所以我们需要通过某些锁等机制来阻止该方法的退出，在我们的实现
+中，我们在退出主节点时通过递减闩值来实现。

@@ -1,0 +1,2 @@
+https://github.com/fpj/zookeeper-book-example
+http://curator.apache.org
